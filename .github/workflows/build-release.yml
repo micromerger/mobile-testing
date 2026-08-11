@@ -1,0 +1,66 @@
+name: Build Release APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      flavor:
+        description: 'Build flavor (leave empty if flavors are not configured)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use pinned Flutter SDK via FVM
+        run: |
+          fvm install
+          fvm use $(cat .fvmrc | grep -o '"flutter":[[:space:]]*"[^"]*"' | cut -d'"' -f4) || fvm use
+
+      - name: Write signing config
+        # Keystore file itself should already live on this VM outside the repo,
+        # e.g. /home/viemed/upload-keystore.jks — never commit it.
+        # Store the passwords as GitHub Actions secrets (Settings > Secrets > Actions).
+        run: |
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=upload
+          storeFile=/home/viemed/upload-keystore.jks
+          EOF
+
+      - name: Get dependencies
+        run: fvm flutter pub get
+
+      - name: Run analyzer
+        run: fvm flutter analyze
+        continue-on-error: true
+
+      - name: Run tests
+        run: fvm flutter test
+        continue-on-error: true
+
+      - name: Build release APK
+        run: |
+          if [ -n "${{ github.event.inputs.flavor }}" ]; then
+            fvm flutter build apk --release --flavor ${{ github.event.inputs.flavor }} -t lib/main.dart
+          else
+            fvm flutter build apk --release
+          fi
+
+      - name: Clean up signing config
+        if: always()
+        run: rm -f android/key.properties
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
