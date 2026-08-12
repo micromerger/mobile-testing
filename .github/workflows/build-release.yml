@@ -110,3 +110,17 @@ jobs:
           name: release-apk-${{ env.NEW_TAG }}
           path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.NEW_TAG }}
+          name: ${{ env.NEW_TAG }}
+          body: |
+            Automated release build.
+            Version: ${{ env.NEW_VERSION }}
+          files: build/app/outputs/flutter-apk/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
