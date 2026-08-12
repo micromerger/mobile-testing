@@ -6,9 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       flavor:
-        description: 'Build flavor (leave empty if flavors are not configured)'
+        description: "Build flavor (leave empty if flavors are not configured)"
         required: false
-        default: ''
+        default: ""
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,9 +27,6 @@ jobs:
           fvm use $(cat .fvmrc | grep -o '"flutter":[[:space:]]*"[^"]*"' | cut -d'"' -f4) || fvm use
 
       - name: Write signing config
-        # Keystore file itself should already live on this VM outside the repo,
-        # e.g. /home/viemed/upload-keystore.jks — never commit it.
-        # Store the passwords as GitHub Actions secrets (Settings > Secrets > Actions).
         run: |
           cat > android/key.properties <<EOF
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
@@ -53,6 +53,20 @@ jobs:
           else
             fvm flutter build apk --release
           fi
+
+      - name: Prepare APK for release
+        run: |
+          mkdir -p release
+          cp build/app/outputs/flutter-apk/*.apk release/app-release.apk
+
+      - name: Create public GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Release APK ${{ github.run_number }}
+          files: release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
 
       - name: Clean up signing config
         if: always()
