@@ -22,7 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # ← important for semantic-release
+          fetch-depth: 0
 
       - name: Use Flutter via FVM
         run: |
@@ -41,16 +41,20 @@ jobs:
         run: fvm flutter test
         continue-on-error: true
 
-   #############################################
+  #############################################
   # JOB 2 — Semantic Release
+  # Only runs on push to main/develop/staging
+  # NOT on pull_request events
   #############################################
   release:
     needs: test
     runs-on: self-hosted
     if: |
-      github.ref == 'refs/heads/main' ||
-      github.ref == 'refs/heads/develop' ||
-      github.ref == 'refs/heads/staging'
+      github.event_name == 'push' && (
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/develop' ||
+        github.ref == 'refs/heads/staging'
+      )
     outputs:
       new_version: ${{ steps.semantic.outputs.new_version }}
       new_tag:     ${{ steps.semantic.outputs.new_tag }}
@@ -84,13 +88,14 @@ jobs:
 
           if grep -q "The next release version is" sr-output.txt; then
             NEW_VERSION=$(grep "The next release version is" sr-output.txt | \
-              grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*$' | head -1)
+              grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' | head -1)
             echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
             echo "new_tag=v$NEW_VERSION"    >> $GITHUB_OUTPUT
             echo "released=true"            >> $GITHUB_OUTPUT
+            echo "New version: $NEW_VERSION"
             npx semantic-release
           else
-            echo "No release needed"
+            echo "No release needed for this commit"
             echo "released=false"           >> $GITHUB_OUTPUT
             CURRENT=$(grep -E '^version:' pubspec.yaml | \
               sed -E 's/version:[[:space:]]*//')
@@ -100,6 +105,8 @@ jobs:
 
   #############################################
   # JOB 3 — Build APK
+  # Only runs when semantic-release created
+  # a new release
   #############################################
   build:
     needs: [test, release]
@@ -107,6 +114,7 @@ jobs:
     if: |
       always() &&
       needs.test.result == 'success' &&
+      needs.release.result == 'success' &&
       needs.release.outputs.released == 'true'
 
     steps:
@@ -114,7 +122,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}   # ← use current branch not hardcoded main
+          ref: ${{ github.ref }}
 
       - name: Use Flutter via FVM
         run: |
