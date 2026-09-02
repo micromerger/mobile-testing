@@ -41,15 +41,16 @@ jobs:
         run: fvm flutter test
         continue-on-error: true
 
-  #############################################
-  # JOB 2 — Semantic Release (version bump)
+   #############################################
+  # JOB 2 — Semantic Release
   #############################################
   release:
     needs: test
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main' ||
-        github.ref == 'refs/heads/develop' ||
-        github.ref == 'refs/heads/staging'
+    if: |
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop' ||
+      github.ref == 'refs/heads/staging'
     outputs:
       new_version: ${{ steps.semantic.outputs.new_version }}
       new_tag:     ${{ steps.semantic.outputs.new_tag }}
@@ -59,7 +60,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # ← semantic-release needs full history
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
@@ -68,7 +69,7 @@ jobs:
           node-version: 20
 
       - name: Install semantic-release
-        run: npm install
+        run: npm ci
 
       - name: Run semantic-release
         id: semantic
@@ -79,44 +80,41 @@ jobs:
           GIT_COMMITTER_NAME: "CI Bot"
           GIT_COMMITTER_EMAIL: "ci-bot@micromerger.local"
         run: |
-          # Run semantic-release and capture output
           npx semantic-release --dry-run 2>&1 | tee sr-output.txt || true
 
-          # Check if a release was created
           if grep -q "The next release version is" sr-output.txt; then
             NEW_VERSION=$(grep "The next release version is" sr-output.txt | \
               grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*$' | head -1)
             echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
             echo "new_tag=v$NEW_VERSION"    >> $GITHUB_OUTPUT
             echo "released=true"            >> $GITHUB_OUTPUT
-
-            # Run actual release
             npx semantic-release
           else
             echo "No release needed"
-            echo "released=false" >> $GITHUB_OUTPUT
-            # Use existing version from pubspec.yaml
+            echo "released=false"           >> $GITHUB_OUTPUT
             CURRENT=$(grep -E '^version:' pubspec.yaml | \
               sed -E 's/version:[[:space:]]*//')
-            echo "new_version=$CURRENT" >> $GITHUB_OUTPUT
-            echo "new_tag=v$CURRENT"    >> $GITHUB_OUTPUT
+            echo "new_version=$CURRENT"     >> $GITHUB_OUTPUT
+            echo "new_tag=v$CURRENT"        >> $GITHUB_OUTPUT
           fi
 
   #############################################
   # JOB 3 — Build APK
   #############################################
   build:
-    needs: release
+    needs: [test, release]
     runs-on: self-hosted
-    if: needs.release.outputs.released == 'true' ||
-        github.event_name == 'workflow_dispatch'
+    if: |
+      always() &&
+      needs.test.result == 'success' &&
+      needs.release.outputs.released == 'true'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: main   # ← get latest after version bump commit
+          ref: ${{ github.ref }}   # ← use current branch not hardcoded main
 
       - name: Use Flutter via FVM
         run: |
@@ -131,11 +129,13 @@ jobs:
             sed -E 's/version:[[:space:]]*//')
           SEMVER=$(echo $VERSION | cut -d'+' -f1)
           BUILD=$(echo $VERSION | cut -d'+' -f2)
+          BRANCH=${GITHUB_REF#refs/heads/}
           echo "version=$VERSION"   >> $GITHUB_OUTPUT
           echo "semver=$SEMVER"     >> $GITHUB_OUTPUT
           echo "build=$BUILD"       >> $GITHUB_OUTPUT
           echo "tag=v$VERSION"      >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
+          echo "branch=$BRANCH"     >> $GITHUB_OUTPUT
+          echo "Version: $VERSION on branch: $BRANCH"
 
       - name: Write signing config
         run: |
@@ -165,7 +165,7 @@ jobs:
               --build-number=${{ steps.version.outputs.build }}
           fi
 
-      - name: Build release AAB (Play Store)
+      - name: Build release AAB
         run: |
           fvm flutter build appbundle \
             --release \
@@ -194,7 +194,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
+          name: "Release ${{ steps.version.outputs.tag }} (${{ steps.version.outputs.branch }})"
           body_path: CHANGELOG.md
           files: |
             build/app/outputs/flutter-apk/*.apk
