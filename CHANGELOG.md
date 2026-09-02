@@ -1,3 +1,9 @@
+## [2.0.0-rc.2](https://github.com/micromerger/mobile-testing/compare/v2.0.0-rc.1...v2.0.0-rc.2) (2026-09-02)
+
+### ✨ Features
+
+* add dark mode toggle to settings ([7e9f6e3](https://github.com/micromerger/mobile-testing/commit/7e9f6e3d01243ac2560a0d6b7b07cbdc75a73e2c))
+
 ## [2.0.0-rc.1](https://github.com/micromerger/mobile-testing/compare/v1.0.0+1...v2.0.0-rc.1) (2026-09-02)
 
 ### ⚠ BREAKING CHANGES
