@@ -55,10 +55,17 @@ jobs:
         github.ref == 'refs/heads/develop' ||
         github.ref == 'refs/heads/staging'
       )
+    # IMPORTANT: default GITHUB_TOKEN is often read-only depending on repo/org
+    # settings. semantic-release/git and semantic-release/github both need
+    # write access to push commits/tags and create releases.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
-      new_version: ${{ steps.semantic.outputs.new_version }}
-      new_tag:     ${{ steps.semantic.outputs.new_tag }}
-      released:    ${{ steps.semantic.outputs.released }}
+      new_version: ${{ steps.semantic.outputs.new_release_version }}
+      new_tag: v${{ steps.semantic.outputs.new_release_version }}
+      released: ${{ steps.semantic.outputs.new_release_published }}
 
     steps:
       - name: Checkout code
@@ -75,33 +82,25 @@ jobs:
       - name: Install semantic-release
         run: npm ci
 
+      # cycjimmy/semantic-release-action wraps semantic-release and exposes
+      # clean, typed outputs (new_release_published / new_release_version)
+      # instead of us grepping stdout, which breaks silently on prerelease
+      # branches and hides real failures behind `|| true`.
       - name: Run semantic-release
         id: semantic
+        uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_AUTHOR_NAME: "CI Bot"
           GIT_AUTHOR_EMAIL: "ci-bot@micromerger.local"
           GIT_COMMITTER_NAME: "CI Bot"
           GIT_COMMITTER_EMAIL: "ci-bot@micromerger.local"
-        run: |
-          npx semantic-release --dry-run 2>&1 | tee sr-output.txt || true
 
-          if grep -q "The next release version is" sr-output.txt; then
-            NEW_VERSION=$(grep "The next release version is" sr-output.txt | \
-              grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' | head -1)
-            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            echo "new_tag=v$NEW_VERSION"    >> $GITHUB_OUTPUT
-            echo "released=true"            >> $GITHUB_OUTPUT
-            echo "New version: $NEW_VERSION"
-            npx semantic-release
-          else
-            echo "No release needed for this commit"
-            echo "released=false"           >> $GITHUB_OUTPUT
-            CURRENT=$(grep -E '^version:' pubspec.yaml | \
-              sed -E 's/version:[[:space:]]*//')
-            echo "new_version=$CURRENT"     >> $GITHUB_OUTPUT
-            echo "new_tag=v$CURRENT"        >> $GITHUB_OUTPUT
-          fi
+      - name: Debug outputs
+        if: always()
+        run: |
+          echo "released=${{ steps.semantic.outputs.new_release_published }}"
+          echo "version=${{ steps.semantic.outputs.new_release_version }}"
 
   #############################################
   # JOB 3 — Build APK
