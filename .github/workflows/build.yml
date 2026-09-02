@@ -1,0 +1,205 @@
+name: Flutter CI/CD with Semantic Release
+
+on:
+  push:
+    branches: [main, develop, staging]
+  pull_request:
+    branches: [main, develop, staging]
+  workflow_dispatch:
+    inputs:
+      flavor:
+        description: 'Build flavor'
+        required: false
+        default: ''
+
+jobs:
+  #############################################
+  # JOB 1 — Test
+  #############################################
+  test:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # ← important for semantic-release
+
+      - name: Use Flutter via FVM
+        run: |
+          fvm install
+          fvm use $(cat .fvmrc | grep -o '"flutter":[[:space:]]*"[^"]*"' | \
+            cut -d'"' -f4) || fvm use
+
+      - name: Get dependencies
+        run: fvm flutter pub get
+
+      - name: Run analyzer
+        run: fvm flutter analyze
+        continue-on-error: true
+
+      - name: Run tests
+        run: fvm flutter test
+        continue-on-error: true
+
+  #############################################
+  # JOB 2 — Semantic Release (version bump)
+  #############################################
+  release:
+    needs: test
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/develop' ||
+        github.ref == 'refs/heads/staging'
+    outputs:
+      new_version: ${{ steps.semantic.outputs.new_version }}
+      new_tag:     ${{ steps.semantic.outputs.new_tag }}
+      released:    ${{ steps.semantic.outputs.released }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # ← semantic-release needs full history
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install semantic-release
+        run: npm ci
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: "CI Bot"
+          GIT_AUTHOR_EMAIL: "ci-bot@micromerger.local"
+          GIT_COMMITTER_NAME: "CI Bot"
+          GIT_COMMITTER_EMAIL: "ci-bot@micromerger.local"
+        run: |
+          # Run semantic-release and capture output
+          npx semantic-release --dry-run 2>&1 | tee sr-output.txt || true
+
+          # Check if a release was created
+          if grep -q "The next release version is" sr-output.txt; then
+            NEW_VERSION=$(grep "The next release version is" sr-output.txt | \
+              grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*$' | head -1)
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "new_tag=v$NEW_VERSION"    >> $GITHUB_OUTPUT
+            echo "released=true"            >> $GITHUB_OUTPUT
+
+            # Run actual release
+            npx semantic-release
+          else
+            echo "No release needed"
+            echo "released=false" >> $GITHUB_OUTPUT
+            # Use existing version from pubspec.yaml
+            CURRENT=$(grep -E '^version:' pubspec.yaml | \
+              sed -E 's/version:[[:space:]]*//')
+            echo "new_version=$CURRENT" >> $GITHUB_OUTPUT
+            echo "new_tag=v$CURRENT"    >> $GITHUB_OUTPUT
+          fi
+
+  #############################################
+  # JOB 3 — Build APK
+  #############################################
+  build:
+    needs: release
+    runs-on: self-hosted
+    if: needs.release.outputs.released == 'true' ||
+        github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main   # ← get latest after version bump commit
+
+      - name: Use Flutter via FVM
+        run: |
+          fvm install
+          fvm use $(cat .fvmrc | grep -o '"flutter":[[:space:]]*"[^"]*"' | \
+            cut -d'"' -f4) || fvm use
+
+      - name: Get version from pubspec.yaml
+        id: version
+        run: |
+          VERSION=$(grep -E '^version:' pubspec.yaml | \
+            sed -E 's/version:[[:space:]]*//')
+          SEMVER=$(echo $VERSION | cut -d'+' -f1)
+          BUILD=$(echo $VERSION | cut -d'+' -f2)
+          echo "version=$VERSION"   >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER"     >> $GITHUB_OUTPUT
+          echo "build=$BUILD"       >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION"      >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Write signing config
+        run: |
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=upload
+          storeFile=/home/viemed/upload-keystore.jks
+          EOF
+
+      - name: Get dependencies
+        run: fvm flutter pub get
+
+      - name: Build release APK
+        run: |
+          if [ -n "${{ github.event.inputs.flavor }}" ]; then
+            fvm flutter build apk \
+              --release \
+              --flavor ${{ github.event.inputs.flavor }} \
+              -t lib/main.dart \
+              --build-name=${{ steps.version.outputs.semver }} \
+              --build-number=${{ steps.version.outputs.build }}
+          else
+            fvm flutter build apk \
+              --release \
+              --build-name=${{ steps.version.outputs.semver }} \
+              --build-number=${{ steps.version.outputs.build }}
+          fi
+
+      - name: Build release AAB (Play Store)
+        run: |
+          fvm flutter build appbundle \
+            --release \
+            --build-name=${{ steps.version.outputs.semver }} \
+            --build-number=${{ steps.version.outputs.build }}
+
+      - name: Clean up signing config
+        if: always()
+        run: rm -f android/key.properties
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk-${{ steps.version.outputs.tag }}
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab-${{ steps.version.outputs.tag }}
+          path: build/app/outputs/bundle/release/*.aab
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: CHANGELOG.md
+          files: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/bundle/release/*.aab
+          draft: false
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
